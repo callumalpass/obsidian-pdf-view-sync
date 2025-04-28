@@ -1,6 +1,6 @@
 {
 	"name": "obsidian-pdf-view-sync",
-	"version": "1.1.2",
+	"version": "1.1.3",
 	"description": "Sync PDF view state between viewing sessions by storing page position in note frontmatter",
 	"main": "main.js",
 	"scripts": {
