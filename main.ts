@@ -276,9 +276,10 @@ export default class PDFViewSyncPlugin extends Plugin {
 				.replace(/{{pdf_folder_path}}/g, pdfFolderPath)
 				.replace(/{{pdf_parent_folder_name}}/g, pdfParentFolderName);
 
-			// Ensure the path is absolute (starts with / unless it's at the vault root)
-			if (!associatedNotePath.startsWith('/') && pdfFolderPath) {
-				associatedNotePath = `${pdfFolderPath}/${associatedNotePath}`;
+			// Always treat the template as an absolute path from the vault root
+			// If it doesn't start with '/', add it to make it absolute
+			if (!associatedNotePath.startsWith('/')) {
+				associatedNotePath = `/${associatedNotePath}`;
 			}
 
 			return associatedNotePath;
