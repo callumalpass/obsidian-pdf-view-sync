@@ -1,15 +1,21 @@
 {
-	"name": "obsidian-sample-plugin",
+	"name": "obsidian-pdf-view-sync",
 	"version": "1.0.0",
-	"description": "This is a sample plugin for Obsidian (https://obsidian.md)",
+	"description": "Sync PDF view state between viewing sessions by storing page position in note frontmatter",
 	"main": "main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
 		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
 		"version": "node version-bump.mjs && git add manifest.json versions.json"
 	},
-	"keywords": [],
-	"author": "",
+	"keywords": [
+		"obsidian",
+		"pdf",
+		"sync",
+		"state",
+		"frontmatter"
+	],
+	"author": "Callum Alpass",
 	"license": "MIT",
 	"devDependencies": {
 		"@types/node": "^16.11.6",

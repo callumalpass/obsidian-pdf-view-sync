@@ -1,94 +1,94 @@
-# Obsidian Sample Plugin
+# PDF View Sync for Obsidian
 
-This is a sample plugin for Obsidian (https://obsidian.md).
+This plugin automatically saves and restores the current page of PDF files viewed in Obsidian. When you close a PDF, the current page number is saved to the frontmatter of an associated Markdown note. When you reopen the PDF, the plugin retrieves this information and returns you to the same page.
 
-This project uses TypeScript to provide type checking and documentation.
-The repo depends on the latest plugin API (obsidian.d.ts) in TypeScript Definition format, which contains TSDoc comments describing what it does.
+## Features
 
-This sample plugin demonstrates some of the basic functionality the plugin API can do.
-- Adds a ribbon icon, which shows a Notice when clicked.
-- Adds a command "Open Sample Modal" which opens a Modal.
-- Adds a plugin setting tab to the settings page.
-- Registers a global click event and output 'click' to the console.
-- Registers a global interval which logs 'setInterval' to the console.
+- **Automatic State Saving:** When you close a PDF, the plugin automatically saves your current page position
+- **Automatic State Loading:** When you open a PDF, the plugin automatically restores your previous page position
+- **Customizable Note Association:** Configure how the plugin determines which note is associated with a PDF
+- **Frontmatter Integration:** Data is stored in frontmatter, making it accessible to other plugins and queries
 
-## First time developing plugins?
+## Usage
 
-Quick starting guide for new plugin devs:
+1. Install the plugin
+2. Configure the settings (optional - the defaults work well for most setups)
+3. Open a PDF in Obsidian
+4. When you close the PDF, your position will be saved
+5. When you reopen the PDF, you'll be returned to the same page
 
-- Check if [someone already developed a plugin for what you want](https://obsidian.md/plugins)! There might be an existing plugin similar enough that you can partner up with.
-- Make a copy of this repo as a template with the "Use this template" button (login to GitHub if you don't see it).
-- Clone your repo to a local development folder. For convenience, you can place this folder in your `.obsidian/plugins/your-plugin-name` folder.
-- Install NodeJS, then run `npm i` in the command line under your repo folder.
-- Run `npm run dev` to compile your plugin from `main.ts` to `main.js`.
-- Make changes to `main.ts` (or create new `.ts` files). Those changes should be automatically compiled into `main.js`.
-- Reload Obsidian to load the new version of your plugin.
-- Enable plugin in settings window.
-- For updates to the Obsidian API run `npm update` in the command line under your repo folder.
+No manual actions needed!
 
-## Releasing new releases
+## Configuration
 
-- Update your `manifest.json` with your new version number, such as `1.0.1`, and the minimum Obsidian version required for your latest release.
-- Update your `versions.json` file with `"new-plugin-version": "minimum-obsidian-version"` so older versions of Obsidian can download an older version of your plugin that's compatible.
-- Create new GitHub release using your new version number as the "Tag version". Use the exact version number, don't include a prefix `v`. See here for an example: https://github.com/obsidianmd/obsidian-sample-plugin/releases
-- Upload the files `manifest.json`, `main.js`, `styles.css` as binary attachments. Note: The manifest.json file must be in two places, first the root path of your repository and also in the release.
-- Publish the release.
+In the plugin settings, you can customize:
 
-> You can simplify the version bump process by running `npm version patch`, `npm version minor` or `npm version major` after updating `minAppVersion` manually in `manifest.json`.
-> The command will bump version in `manifest.json` and `package.json`, and add the entry for the new version to `versions.json`
+- **Associated Note Path Template:** Define how to find or create the Markdown note associated with each PDF. Supports placeholders:
+  - `{{pdf_filename}}`: The full filename with extension (e.g., "Paper.pdf")
+  - `{{pdf_basename}}`: The filename without extension (e.g., "Paper")
+  - `{{pdf_folder_path}}`: The folder path containing the PDF
+  - `{{pdf_parent_folder_name}}`: The name of the immediate parent folder
+  
+  Default: `@{{pdf_basename}}.md`
 
-## Adding your plugin to the community plugin list
+- **Frontmatter Key:** The key name used in the frontmatter to store PDF state.
+  Default: `pdf-view-state`
 
-- Check the [plugin guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines).
-- Publish an initial version.
-- Make sure you have a `README.md` file in the root of your repo.
-- Make a pull request at https://github.com/obsidianmd/obsidian-releases to add your plugin.
+- **Enable State Saving:** Master switch to enable/disable saving
+  Default: Enabled
 
-## How to use
+- **Enable State Loading:** Master switch to enable/disable loading
+  Default: Enabled
 
-- Clone this repo.
-- Make sure your NodeJS is at least v16 (`node --version`).
-- `npm i` or `yarn` to install dependencies.
-- `npm run dev` to start compilation in watch mode.
+- **Create Associated Note:** If enabled, creates the associated note when saving if it doesn't exist
+  Default: Disabled
 
-## Manually installing the plugin
+## Example
 
-- Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.
+If you have a PDF file at `Research/Papers/Smith 2024.pdf` and your template is set to `@{{pdf_basename}}.md`, the plugin will look for a note at `Research/Papers/@Smith 2024.md`.
 
-## Improve code quality with eslint (optional)
-- [ESLint](https://eslint.org/) is a tool that analyzes your code to quickly find problems. You can run ESLint against your plugin to find common bugs and ways to improve your code. 
-- To use eslint with this project, make sure to install eslint from terminal:
-  - `npm install -g eslint`
-- To use eslint to analyze this project use this command:
-  - `eslint main.ts`
-  - eslint will then create a report with suggestions for code improvement by file and line number.
-- If your source code is in a folder, such as `src`, you can use eslint with this command to analyze all files in that folder:
-  - `eslint .\src\`
+When you close the PDF after viewing page 15, the plugin will add or update:
 
-## Funding URL
+```yaml
+---
+title: Some existing title
+tags: [some, existing, tags]
+pdf-view-state: 15
+---
 
-You can include funding URLs where people who use your plugin can financially support it.
-
-The simple way is to set the `fundingUrl` field to your link in your `manifest.json` file:
-
-```json
-{
-    "fundingUrl": "https://buymeacoffee.com"
-}
+Your existing note content...
 ```
 
-If you have multiple URLs, you can also do:
+## Installation
 
-```json
-{
-    "fundingUrl": {
-        "Buy Me a Coffee": "https://buymeacoffee.com",
-        "GitHub Sponsor": "https://github.com/sponsors",
-        "Patreon": "https://www.patreon.com/"
-    }
-}
-```
+### From Obsidian Community Plugins
 
-## API Documentation
+1. Open Obsidian
+2. Go to Settings → Community plugins
+3. Click "Browse" and search for "PDF View Sync"
+4. Click Install
+5. Enable the plugin
 
-See https://github.com/obsidianmd/obsidian-api
+### Manual Installation
+
+1. Download the latest release
+2. Extract the zip file into your Obsidian vault's `.obsidian/plugins/` directory
+3. Enable the plugin in Obsidian's Community Plugins settings
+
+## Development
+
+If you want to contribute or modify this plugin:
+
+1. Clone this repository
+2. Run `npm i` to install dependencies
+3. Run `npm run dev` to start development mode with hot reloading
+4. Make your changes
+5. Run `npm run build` to compile the plugin
+
+## License
+
+MIT License
+
+## Support
+
+If you encounter any issues or have feature requests, please file an issue in the [GitHub repository](https://github.com/callumalpass/obsidian-pdf-view-sync).
