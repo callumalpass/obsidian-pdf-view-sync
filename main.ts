@@ -276,11 +276,13 @@ export default class PDFViewSyncPlugin extends Plugin {
 				.replace(/{{pdf_folder_path}}/g, pdfFolderPath)
 				.replace(/{{pdf_parent_folder_name}}/g, pdfParentFolderName);
 
-			// Always treat the template as an absolute path from the vault root
-			// If it doesn't start with '/', add it to make it absolute
-			if (!associatedNotePath.startsWith('/')) {
-				associatedNotePath = `/${associatedNotePath}`;
+			// Obsidian paths don't have a leading slash - remove it if present
+			if (associatedNotePath.startsWith('/')) {
+				associatedNotePath = associatedNotePath.substring(1);
 			}
+
+			// Debug output to help troubleshoot
+			console.log(`PDF path: ${pdfFilePath}, Associated note path: ${associatedNotePath}`);
 
 			return associatedNotePath;
 		} catch (error) {
