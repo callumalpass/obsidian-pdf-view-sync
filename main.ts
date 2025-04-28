@@ -245,13 +245,15 @@ export default class PDFViewSyncPlugin extends Plugin {
 	}
 
 	private getActivePDFView(): PDFView | null {
-		const activeView = this.app.workspace.getActiveViewOfType(this.isPDFViewOfType);
-		return activeView as unknown as PDFView;
-	}
-
-	// Custom type guard for PDF views
-	private isPDFViewOfType(view: any): boolean {
-		return view && view.file && view.file.extension === 'pdf';
+		// Find the active PDF view by iterating through leaves
+		let activePDFView: PDFView | null = null;
+		
+		const activeLeaf = this.app.workspace.activeLeaf;
+		if (activeLeaf && activeLeaf.view && this.isPDFView(activeLeaf.view)) {
+			activePDFView = activeLeaf.view as unknown as PDFView;
+		}
+		
+		return activePDFView;
 	}
 
 	private getAssociatedNotePath(pdfFilePath: string): string | null {
