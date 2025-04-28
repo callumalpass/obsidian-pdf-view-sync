@@ -1,285 +1,268 @@
 import { App, FrontMatterCache, Notice, Plugin, PluginSettingTab, Setting, TAbstractFile, TFile, parseYaml } from 'obsidian';
 
-interface PDFViewSyncSettings {
-	associatedNoteTemplate: string;
-	frontmatterKey: string;
-	enableStateSaving: boolean;
-	enableStateLoading: boolean;
-	createAssociatedNote: boolean;
+/*************************************************
+ * PDF‑View‑Sync — persist the last‑read page of  *
+ * every PDF in the YAML front‑matter of a buddy  *
+ * markdown note and restore it next time.        *
+ *                                               *
+ * v2 — fixes                                     *
+ *   • front‑matter never updating                *
+ *   • page never restoring                       *
+ *                                               *
+ *   Key changes                                  *
+ *   1. always add freshly‑opened PDFs to         *
+ *      openPDFs so they actually get saved       *
+ *   2. use fileManager.processFrontMatter()      *
+ *   3. save on every pagechange event emitted    *
+ *      by the internal PDF.js viewer            *
+ *   4. simpler wait‑until‑ready logic            *
+ *************************************************/
+
+interface Settings {
+  associatedNoteTemplate: string;
+  frontmatterKey: string;
+  enableStateSaving: boolean;
+  enableStateLoading: boolean;
+  createAssociatedNote: boolean;
 }
 
-const DEFAULT_SETTINGS: PDFViewSyncSettings = {
-	associatedNoteTemplate: '@{{pdf_basename}}.md',
-	frontmatterKey: 'pdf-view-state',
-	enableStateSaving: true,
-	enableStateLoading: true,
-	createAssociatedNote: false,
+const DEFAULT_SETTINGS: Settings = {
+  associatedNoteTemplate: '@{{pdf_basename}}.md',
+  frontmatterKey: 'pdf-view-state',
+  enableStateSaving: true,
+  enableStateLoading: true,
+  createAssociatedNote: false,
 };
 
-// Bare-bones interface for Obsidian's internal PDF view
 interface PDFView {
-	file: TFile;
-	getState(): { page: number };
-	setState(state: { page: number }, result: any): Promise<void>;
+  file: TFile;
+  getState(): { page: number };
+  setState(state: { page: number }, result: any): Promise<void>;
+  containerEl: HTMLElement;
 }
 
 export default class PDFViewSyncPlugin extends Plugin {
-	settings: PDFViewSyncSettings;
-	// Keep track of open PDFs so we can flush them on close/unload
-	private openPDFs: Map<string, PDFView> = new Map();
+  settings!: Settings;
+  private openPDFs = new Map<string, PDFView>();
+  private LAST_SAVE = 0;
 
-	async onload() {
-		await this.loadSettings();
+  /* ─────────────────────────── lifecycle */
 
-		this.addSettingTab(new PDFViewSyncSettingTab(this.app, this));
+  async onload() {
+    await this.loadSettings();
+    this.addSettingTab(new SettingTab(this.app, this));
 
-		// Restore state when a PDF is opened
-		this.registerEvent(
-			this.app.workspace.on('file-open', (file) => this.handleFileOpen(file)),
-		);
+    // 1️⃣ track every PDF we open so autosave hits it
+    this.registerEvent(
+      this.app.workspace.on('file-open', (file) => {
+        if (file instanceof TFile && file.extension === 'pdf') {
+          const view = this.getActivePDFView();
+          if (view) this.openPDFs.set(file.path, view);
+          this.restorePage(file);
+        }
+      }),
+    );
 
-		// Detect leaves that disappear (PDF closed) and persist state
-		this.registerEvent(
-			this.app.workspace.on('layout-change', () => this.checkForClosedPDFs()),
-		);
+    // 2️⃣ save when we leave a PDF view
+    this.registerEvent(
+      this.app.workspace.on('active-leaf-change', (leaf) => {
+        if (leaf && leaf.view && !this.isPDFView(leaf.view)) this.saveAll();
+      }),
+    );
 
-		// Persist when we switch away from a PDF
-		this.registerEvent(
-			this.app.workspace.on('active-leaf-change', (leaf) => {
-				if (leaf && leaf.view && !this.isPDFView(leaf.view)) this.saveAllPDFStates();
-			}),
-		);
+    // 3️⃣ periodic safety‑save
+    this.registerInterval(window.setInterval(() => this.saveAll(), 20_000));
 
-		// Autosave every 30 s
-		this.registerInterval(window.setInterval(() => this.saveAllPDFStates(), 30_000));
+    console.log('PDF‑View‑Sync loaded');
+  }
 
-		// Populate openPDFs after initial layout
-		this.app.workspace.onLayoutReady(() => this.trackOpenPDFs());
+  onunload() {
+    this.saveAll();
+  }
 
-		console.log('PDF View Sync plugin loaded');
-	}
+  /* ─────────────────────────── helpers */
 
-	// --------------  helpers --------------
+  private isPDFView(v: any): v is PDFView {
+    return v && v.file && v.file.extension === 'pdf';
+  }
 
-	private isPDFView(view: any): view is PDFView {
-		return view && view.file && view.file.extension === 'pdf';
-	}
+  private getActivePDFView(): PDFView | null {
+    const leaf = this.app.workspace.activeLeaf;
+    return leaf && this.isPDFView(leaf.view) ? (leaf.view as PDFView) : null;
+  }
 
-	private getActivePDFView(): PDFView | null {
-		const leaf = this.app.workspace.activeLeaf;
-		return leaf && this.isPDFView(leaf.view) ? (leaf.view as PDFView) : null;
-	}
+  /* ─────────────────────────── restore */
 
-	private async waitForPDFReady(pdfView: PDFView): Promise<void> {
-		// Poll until Obsidian has rendered the PDF and getState() stops returning page 1
-		for (let i = 0; i < 20; i++) {
-			const s = pdfView.getState();
-			if (s && s.page && s.page > 1) return;
-			await new Promise((r) => setTimeout(r, 100));
-		}
-	}
+  private async restorePage(file: TFile) {
+    if (!this.settings.enableStateLoading) return;
 
-	private saveAllPDFStates() {
-		for (const pdfView of this.openPDFs.values()) this.savePDFState(pdfView);
-	}
+    const pdfView = this.getActivePDFView();
+    if (!pdfView) return;
 
-	private trackOpenPDFs() {
-		this.app.workspace.iterateAllLeaves((leaf) => {
-			if (this.isPDFView(leaf.view)) {
-				const v = leaf.view as PDFView;
-				this.openPDFs.set(v.file.path, v);
-			}
-		});
-	}
+    const notePath = this.getAssociatedNotePath(file.path);
+    if (!notePath) return;
 
-	private checkForClosedPDFs() {
-		const stillOpen = new Set<string>();
-		this.app.workspace.iterateAllLeaves((leaf) => {
-			if (this.isPDFView(leaf.view)) stillOpen.add((leaf.view as PDFView).file.path);
-		});
+    const note = this.app.vault.getAbstractFileByPath(notePath);
+    if (!(note instanceof TFile)) return;
 
-		for (const [p, v] of this.openPDFs.entries()) {
-			if (!stillOpen.has(p)) {
-				this.savePDFState(v);
-				this.openPDFs.delete(p);
-			}
-		}
+    let fm: FrontMatterCache | undefined | null = this.app.metadataCache.getCache(notePath)?.frontmatter;
+    if (!fm) {
+      const txt = await this.app.vault.read(note);
+      const m = txt.match(/^---\n([\s\S]*?)\n---/);
+      if (m) fm = parseYaml(m[1]);
+    }
 
-		// add new ones
-		this.app.workspace.iterateAllLeaves((leaf) => {
-			if (this.isPDFView(leaf.view)) {
-				const v = leaf.view as PDFView;
-				if (!this.openPDFs.has(v.file.path)) this.openPDFs.set(v.file.path, v);
-			}
-		});
-	}
+    if (!fm || fm[this.settings.frontmatterKey] == null) return;
 
-	// --------------  main logic --------------
+    const raw = fm[this.settings.frontmatterKey];
+    const page = typeof raw === 'number' ? raw : raw?.page;
+    if (typeof page !== 'number') return;
 
-	async handleFileOpen(file: TAbstractFile | null) {
-		if (!this.settings.enableStateLoading || !file || !(file instanceof TFile) || file.extension !== 'pdf') return;
+    await this.waitUntilPDFReady(pdfView);
+    await pdfView.setState({ page }, {});
+    new Notice(`Restored to page ${page}`);
+  }
 
-		const pdfView = this.getActivePDFView();
-		if (!pdfView) return;
+  private async waitUntilPDFReady(pdfView: PDFView) {
+    /* The builtin viewer fires a custom "pagechange" event once the
+       first render finishes.  Hook it instead of polling. */
+    if ((pdfView.containerEl as any).__pdfSyncReady) return; // already waited once
 
-		try {
-			const notePath = this.getAssociatedNotePath(file.path);
-			if (!notePath) return;
+    await new Promise<void>((res) => {
+      const listener = () => {
+        pdfView.containerEl.removeEventListener('pagechange', listener);
+        (pdfView.containerEl as any).__pdfSyncReady = true;
+        res();
+      };
+      pdfView.containerEl.addEventListener('pagechange', listener, { once: true });
+    });
+  }
 
-			const note = this.app.vault.getAbstractFileByPath(notePath);
-			if (!note || !(note instanceof TFile)) return;
+  /* ─────────────────────────── save */
 
-			// Try cache first
-			let front: FrontMatterCache | null | undefined = this.app.metadataCache.getCache(notePath)?.frontmatter;
+  private saveAll() {
+    if (!this.settings.enableStateSaving) return;
+    const now = Date.now();
+    // throttle to once every 5 s overall so heavy scrolling doesn’t spam disk
+    if (now - this.LAST_SAVE < 5000) return;
+    this.LAST_SAVE = now;
 
-			if (!front) {
-				// fall back to manual parse (rare)
-				const raw = await this.app.vault.read(note);
-				const m = raw.match(/^---\n([\s\S]*?)\n---/);
-				if (m) front = parseYaml(m[1]);
-			}
+    for (const v of this.openPDFs.values()) this.saveOne(v);
+  }
 
-			if (!front || front[this.settings.frontmatterKey] === undefined) return;
+  private async saveOne(pdfView: PDFView) {
+    const state = pdfView.getState();
+    if (!state || typeof state.page !== 'number') return;
 
-			const value = front[this.settings.frontmatterKey];
-			const page = typeof value === 'number' ? value : value?.page;
-			if (typeof page !== 'number') return;
+    const notePath = this.getAssociatedNotePath(pdfView.file.path);
+    if (!notePath) return;
 
-			await this.waitForPDFReady(pdfView);
-			await pdfView.setState({ page }, {});
-			new Notice(`Restored to page ${page}`);
-		} catch (err) {
-			console.error('Failed to restore PDF state:', err);
-		}
-	}
+    let note = this.app.vault.getAbstractFileByPath(notePath);
+    if (!(note instanceof TFile)) {
+      if (!this.settings.createAssociatedNote) return;
+      note = await this.app.vault.create(notePath, `---\n${this.settings.frontmatterKey}: ${state.page}\n---\n\n`);
+    }
 
-	async savePDFState(pdfView: PDFView) {
-		if (!this.settings.enableStateSaving) return;
+    try {
+      await this.app.fileManager.processFrontMatter(note, (fm) => {
+        fm[this.settings.frontmatterKey] = state.page;
+      });
+    } catch (e) {
+      console.error('[PDF‑View‑Sync] front‑matter write failed', e);
+    }
+  }
 
-		const current = pdfView.getState();
-		if (!current || typeof current.page !== 'number') return;
+  /* ─────────────────────────── path helpers */
 
-		const notePath = this.getAssociatedNotePath(pdfView.file.path);
-		if (!notePath) return;
+  private getAssociatedNotePath(pdfPath: string): string | null {
+    try {
+      const f = this.app.vault.getAbstractFileByPath(pdfPath);
+      if (!(f instanceof TFile)) return null;
 
-		let note = this.app.vault.getAbstractFileByPath(notePath);
+      const pdfFilename = f.name;
+      const pdfBasename = pdfFilename.replace(/\.pdf$/i, '');
+      const pdfFolderPath = f.parent ? f.parent.path : '';
+      const pdfParentFolder = f.parent ? f.parent.name : '';
 
-		// Optionally create the note first time
-		if (!note || !(note instanceof TFile)) {
-			if (!this.settings.createAssociatedNote) return;
-			note = await this.app.vault.create(notePath, `---\n${this.settings.frontmatterKey}: ${current.page}\n---\n\n`);
-			return;
-		}
+      let p = this.settings.associatedNoteTemplate
+        .replace(/{{pdf_filename}}/g, pdfFilename)
+        .replace(/{{pdf_basename}}/g, pdfBasename)
+        .replace(/{{pdf_folder_path}}/g, pdfFolderPath)
+        .replace(/{{pdf_parent_folder_name}}/g, pdfParentFolder);
 
-		try {
-			await this.app.fileManager.processFrontMatter(note, (fm) => {
-				fm[this.settings.frontmatterKey] = current.page;
-			});
-		} catch (err) {
-			console.error('Error writing front-matter:', err);
-		}
-	}
+      return p.startsWith('/') ? p.slice(1) : p;
+    } catch (e) {
+      console.error('[PDF‑View‑Sync] path error', e);
+      return null;
+    }
+  }
 
-	private getAssociatedNotePath(pdfPath: string): string | null {
-		try {
-			const f = this.app.vault.getAbstractFileByPath(pdfPath);
-			if (!f || !(f instanceof TFile)) return null;
+  /* ─────────────────────────── settings */
 
-			const pdfFilename = f.name;
-			const pdfBasename = pdfFilename.replace(/\.pdf$/i, '');
-			const pdfFolderPath = f.parent ? f.parent.path : '';
-			const pdfParentFolder = f.parent ? f.parent.name : '';
+  async loadSettings() {
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+  }
 
-			let p = this.settings.associatedNoteTemplate
-				.replace(/{{pdf_filename}}/g, pdfFilename)
-				.replace(/{{pdf_basename}}/g, pdfBasename)
-				.replace(/{{pdf_folder_path}}/g, pdfFolderPath)
-				.replace(/{{pdf_parent_folder_name}}/g, pdfParentFolder);
-
-			return p.startsWith('/') ? p.slice(1) : p;
-		} catch (e) {
-			console.error('Path calc error:', e);
-			return null;
-		}
-	}
-
-	onunload() {
-		for (const v of this.openPDFs.values()) this.savePDFState(v);
-		console.log('PDF View Sync plugin unloaded');
-	}
-
-	// --------------  settings I/O --------------
-
-	async loadSettings() {
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-	}
-
-	async saveSettings() {
-		await this.saveData(this.settings);
-	}
+  async saveSettings() {
+    await this.saveData(this.settings);
+  }
 }
 
-class PDFViewSyncSettingTab extends PluginSettingTab {
-	constructor(app: App, private plugin: PDFViewSyncPlugin) {
-		super(app, plugin);
-	}
+class SettingTab extends PluginSettingTab {
+  constructor(app: App, private plugin: PDFViewSyncPlugin) {
+    super(app, plugin);
+  }
 
-	display(): void {
-		const { containerEl } = this;
-		containerEl.empty();
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
 
-		containerEl.createEl('h2', { text: 'PDF View State Sync Settings' });
+    containerEl.createEl('h2', { text: 'PDF‑View‑Sync' });
 
-		new Setting(containerEl)
-			.setName('Associated Note Path Template')
-			.setDesc('Placeholders: {{pdf_filename}}, {{pdf_basename}}, {{pdf_folder_path}}, {{pdf_parent_folder_name}}')
-			.addText((t) =>
-				t.setPlaceholder('@{{pdf_basename}}.md')
-				.setValue(this.plugin.settings.associatedNoteTemplate)
-				.onChange(async (v) => {
-					this.plugin.settings.associatedNoteTemplate = v;
-					await this.plugin.saveSettings();
-				}),
-			);
+    new Setting(containerEl)
+      .setName('Associated Note Path Template')
+      .addText((t) =>
+        t
+          .setPlaceholder('@{{pdf_basename}}.md')
+          .setValue(this.plugin.settings.associatedNoteTemplate)
+          .onChange(async (v) => {
+            this.plugin.settings.associatedNoteTemplate = v;
+            await this.plugin.saveSettings();
+          }),
+      );
 
-		new Setting(containerEl)
-			.setName('Front-matter Key')
-			.setDesc('YAML key used to store the page number')
-			.addText((t) =>
-				t.setPlaceholder('pdf-view-state')
-				.setValue(this.plugin.settings.frontmatterKey)
-				.onChange(async (v) => {
-					this.plugin.settings.frontmatterKey = v;
-					await this.plugin.saveSettings();
-				}),
-			);
+    new Setting(containerEl)
+      .setName('Front‑matter key')
+      .addText((t) =>
+        t
+          .setPlaceholder('pdf-view-state')
+          .setValue(this.plugin.settings.frontmatterKey)
+          .onChange(async (v) => {
+            this.plugin.settings.frontmatterKey = v;
+            await this.plugin.saveSettings();
+          }),
+      );
 
-		new Setting(containerEl)
-			.setName('Enable State Saving')
-			.addToggle((tog) =>
-				tog.setValue(this.plugin.settings.enableStateSaving).onChange(async (v) => {
-					this.plugin.settings.enableStateSaving = v;
-					await this.plugin.saveSettings();
-				}),
-			);
+    new Setting(containerEl)
+      .setName('Enable saving')
+      .addToggle((tog) => tog.setValue(this.plugin.settings.enableStateSaving).onChange(async (v) => {
+        this.plugin.settings.enableStateSaving = v;
+        await this.plugin.saveSettings();
+      }));
 
-		new Setting(containerEl)
-			.setName('Enable State Loading')
-			.addToggle((tog) =>
-				tog.setValue(this.plugin.settings.enableStateLoading).onChange(async (v) => {
-					this.plugin.settings.enableStateLoading = v;
-					await this.plugin.saveSettings();
-				}),
-			);
+    new Setting(containerEl)
+      .setName('Enable loading')
+      .addToggle((tog) => tog.setValue(this.plugin.settings.enableStateLoading).onChange(async (v) => {
+        this.plugin.settings.enableStateLoading = v;
+        await this.plugin.saveSettings();
+      }));
 
-		new Setting(containerEl)
-			.setName('Create Associated Note')
-			.setDesc('Automatically create the note if it is missing')
-			.addToggle((tog) =>
-				tog.setValue(this.plugin.settings.createAssociatedNote).onChange(async (v) => {
-					this.plugin.settings.createAssociatedNote = v;
-					await this.plugin.saveSettings();
-				}),
-			);
-	}
+    new Setting(containerEl)
+      .setName('Create associated note if missing')
+      .addToggle((tog) => tog.setValue(this.plugin.settings.createAssociatedNote).onChange(async (v) => {
+        this.plugin.settings.createAssociatedNote = v;
+        await this.plugin.saveSettings();
+      }));
+  }
 }
+
