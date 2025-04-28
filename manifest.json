@@ -1,7 +1,7 @@
 {
 	"id": "pdf-view-sync",
 	"name": "PDF View Sync",
-	"version": "1.1.3",
+	"version": "1.1.4",
 	"minAppVersion": "0.15.0",
 	"description": "Synchronizes PDF view state (current page) between viewing sessions by storing in note frontmatter.",
 	"author": "Callum Alpass",
