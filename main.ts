@@ -45,6 +45,21 @@ export default class PDFViewSyncPlugin extends Plugin {
 				this.checkForClosedPDFs();
 			})
 		);
+		
+		// Monitor active leaf changes to save state
+		this.registerEvent(
+			this.app.workspace.on('active-leaf-change', (leaf) => {
+				// If we're navigating away from a PDF, save its state
+				if (leaf && leaf.view && !this.isPDFView(leaf.view)) {
+					this.saveAllPDFStates();
+				}
+			})
+		);
+		
+		// Add periodic saving every 30 seconds for open PDFs
+		this.registerInterval(window.setInterval(() => {
+			this.saveAllPDFStates();
+		}, 30 * 1000));
 
 		// Keep track of open PDF views
 		this.app.workspace.onLayoutReady(() => {
@@ -52,6 +67,14 @@ export default class PDFViewSyncPlugin extends Plugin {
 		});
 
 		console.log('PDF View Sync plugin loaded');
+	}
+
+	// Save state for all open PDFs
+	private saveAllPDFStates() {
+		console.log(`Saving state for all open PDFs...`);
+		for (const pdfView of this.openPDFs.values()) {
+			this.savePDFState(pdfView);
+		}
 	}
 
 	// Store the PDFs that are currently open
@@ -149,16 +172,36 @@ export default class PDFViewSyncPlugin extends Plugin {
 			}
 
 			// Check if we have frontmatter and the PDF state key
-			if (frontmatter && frontmatter[this.settings.frontmatterKey]) {
+			if (frontmatter && frontmatter[this.settings.frontmatterKey] !== undefined) {
 				const pdfState = frontmatter[this.settings.frontmatterKey];
+				console.log(`Found PDF state in frontmatter:`, pdfState);
+				
 				const pageNumber = typeof pdfState === 'number' ? pdfState : 
 					(typeof pdfState === 'object' && pdfState.page !== undefined ? pdfState.page : null);
 				
+				console.log(`Parsed page number: ${pageNumber}`);
+				
 				if (pageNumber !== null) {
-					// Set the PDF view state
-					await pdfView.setState({ page: pageNumber }, {});
-					console.log(`Restored PDF state for ${file.path} to page ${pageNumber}`);
+					// Get current state for comparison
+					const currentState = pdfView.getState();
+					console.log(`Current PDF state: page ${currentState?.page}`);
+					
+					// Wait for PDF to be properly loaded
+					setTimeout(async () => {
+						// Set the PDF view state
+						try {
+							const stateToSet = { page: pageNumber };
+							console.log(`Setting state to:`, stateToSet);
+							await pdfView.setState(stateToSet, {});
+							console.log(`Restored PDF state for ${file.path} to page ${pageNumber}`);
+							new Notice(`Restored PDF to page ${pageNumber}`);
+						} catch (e) {
+							console.error(`Error setting PDF state:`, e);
+						}
+					}, 500); // Delay slightly to ensure PDF is fully loaded
 				}
+			} else {
+				console.log(`No PDF state found in frontmatter for key: ${this.settings.frontmatterKey}`);
 			}
 		} catch (error) {
 			console.error(`Error loading PDF state for ${file.path}:`, error);
@@ -166,25 +209,40 @@ export default class PDFViewSyncPlugin extends Plugin {
 	}
 
 	async savePDFState(pdfView: any) {
-		if (!this.settings.enableStateSaving || !pdfView || !pdfView.file) {
+		console.log(`Attempting to save PDF state...`);
+		if (!this.settings.enableStateSaving) {
+			console.log(`State saving is disabled in settings`);
+			return;
+		}
+		
+		if (!pdfView || !pdfView.file) {
+			console.log(`Invalid PDF view or missing file reference`);
 			return;
 		}
 
 		try {
 			const pdfFilePath = pdfView.file.path;
+			console.log(`Saving state for PDF: ${pdfFilePath}`);
 			
 			// Get current state (page number)
 			const currentState = pdfView.getState();
+			console.log(`Retrieved state:`, currentState);
+			
 			if (!currentState || currentState.page === undefined) {
-				console.log(`Could not get state for ${pdfFilePath}`);
+				console.log(`Could not get valid state for ${pdfFilePath}`);
 				return;
 			}
+			
+			console.log(`Current page: ${currentState.page}`);
 
 			// Calculate associated note path
 			const associatedNotePath = this.getAssociatedNotePath(pdfFilePath);
 			if (!associatedNotePath) {
+				console.log(`Could not determine associated note path`);
 				return;
 			}
+			
+			console.log(`Will save to note: ${associatedNotePath}`);
 
 			// Check if the associated note exists
 			let associatedNote = this.app.vault.getAbstractFileByPath(associatedNotePath);
@@ -207,6 +265,7 @@ export default class PDFViewSyncPlugin extends Plugin {
 
 			// Read the content of the associated note
 			const content = await this.app.vault.read(associatedNote as TFile);
+			console.log(`Read note content, length: ${content.length} characters`);
 			
 			// Check if the note has frontmatter
 			const frontmatterRegex = /^---\n([\s\S]*?)\n---/;
@@ -215,29 +274,38 @@ export default class PDFViewSyncPlugin extends Plugin {
 			let newContent: string;
 			
 			if (frontmatterMatch) {
+				console.log(`Found existing frontmatter`);
 				// Parse existing frontmatter
 				try {
 					const frontmatter = parseYaml(frontmatterMatch[1]);
+					console.log(`Parsed frontmatter:`, frontmatter);
+					
 					// Update the PDF state
+					console.log(`Setting ${this.settings.frontmatterKey} to ${currentState.page}`);
 					frontmatter[this.settings.frontmatterKey] = currentState.page;
+					
 					// Reconstruct the content with updated frontmatter
 					const updatedFrontmatter = stringifyYaml(frontmatter);
+					console.log(`Stringified updated frontmatter`);
 					newContent = content.replace(frontmatterRegex, `---\n${updatedFrontmatter}---`);
 				} catch (e) {
 					console.error("Error parsing frontmatter:", e);
 					// If we can't parse the frontmatter, add our state at the end of it
 					const existingFrontmatter = frontmatterMatch[1];
+					console.log(`Adding our key to existing frontmatter as text`);
 					const updatedFrontmatter = `${existingFrontmatter}\n${this.settings.frontmatterKey}: ${currentState.page}`;
 					newContent = content.replace(frontmatterRegex, `---\n${updatedFrontmatter}\n---`);
 				}
 			} else {
 				// No frontmatter exists, add it
+				console.log(`No frontmatter found, creating new frontmatter block`);
 				newContent = `---\n${this.settings.frontmatterKey}: ${currentState.page}\n---\n\n${content}`;
 			}
 			
 			// Write the modified content back to the file
+			console.log(`Writing updated content back to note`);
 			await this.app.vault.modify(associatedNote as TFile, newContent);
-			console.log(`Saved PDF state for ${pdfFilePath} at page ${currentState.page}`);
+			console.log(`Successfully saved PDF state for ${pdfFilePath} at page ${currentState.page}`);
 			
 		} catch (error) {
 			console.error("Error saving PDF state:", error);
